@@ -15,12 +15,19 @@ enum input_type {
 struct search_data {
     input_type type;
     int64_t value;
+    const char* pattern;
+    size_t pattern_len;
 };
 
 static const char* page_state[] = {"MEM_COMMIT", "MEM_FREE", "MEM_RESERVE"};
 static const char* page_type[] = {"MEM_IMAGE", "MEM_MAPPED", "MEM_PRIVATE"};
 static const char* page_protect[] = {"PAGE_EXECUTE", "PAGE_EXECUTE_READ", "PAGE_EXECUTE_READWRITE", "PAGE_EXECUTE_WRITECOPY", "PAGE_NOACCESS", "PAGE_READONLY", 
                                     "PAGE_READWRITE", "PAGE_WRITECOPY", "PAGE_TARGETS_INVALID", "UNKNOWN"};
+
+int is_hex(const char *pattern, size_t pattern_len) {
+    return (((pattern_len > 2) && (pattern[pattern_len - 1] == 'h' || pattern[pattern_len - 1] == 'H'))
+        || ((pattern_len > 3) && (pattern[0] == '0' && pattern[1] == 'x')));
+}
 
 const char* get_page_state(DWORD state) {
     const char *result = NULL;
@@ -101,19 +108,20 @@ static void parse_input(const char* pattern, search_data *data) {
         return;
     }
 
-    const size_t len = strlen(pattern);
-    if (((len > 2) && (pattern[len - 1] == 'h' || pattern[len - 1] == 'H'))
-        || ((len > 3) && (pattern[0] == '0' && pattern[1] == 'x'))) {
-        if (len > (sizeof(int64_t) * 2 + 2)) {
+    if (is_hex(pattern, data->pattern_len)) {
+        if (data->pattern_len > (sizeof(int64_t) * 2 + 2)) {
             puts("Maximus supported search size is QWORD");
             data->type = it_error_type;
-        }
-        else {
+        } else {
             char* end;
             const int64_t value = strtoll(pattern, &end, 0x10);
             if (pattern != end) {
                 data->type = it_hex;
                 data->value = value;
+                data->pattern = (const char*)&data->value;
+                data->pattern_len /= 2;
+                data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
+                puts("Searching for a a hex string.");
             } else {
                 puts("Invalid hex value provided");
                 data->type = it_error_type;
@@ -121,18 +129,20 @@ static void parse_input(const char* pattern, search_data *data) {
         }
     } else {
         data->type = it_ascii;
+        data->pattern = pattern;
+        puts("Searching for a an ascii string.");
+
     }
 }
 
-static void find_pattern(HANDLE process, const char* pattern) {
+static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     unsigned char* p = NULL;
     MEMORY_BASIC_INFORMATION info;
     char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
-    const int pattern_len = strlen(pattern);
     char *heap_buffer = NULL;
 
     puts("Searching committed memory...");
-
+    size_t num_found = 0;
     for (p = NULL; VirtualQueryEx(process, p, &info, sizeof(info)) == sizeof(info); p += info.RegionSize) {
         if (info.State == MEM_COMMIT && (info.Type == MEM_MAPPED || info.Type == MEM_PRIVATE || info.Type == MEM_IMAGE)) {
             char* buffer = NULL;
@@ -157,11 +167,15 @@ static void find_pattern(HANDLE process, const char* pattern) {
                             print_once = 0;
                         }
                         printf("Match at address: 0x%p\n", p + i);
+                        num_found++;
                     }
                 }
             }
             free(heap_buffer);
         }
+    }
+    if (!num_found) {
+        puts("No matches found.");
     }
 }
 
@@ -171,17 +185,20 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int pid;
-    sscanf_s(argv[1], "%i", &pid);
+    const char* pid_str = argv[1];
+    const size_t pid_len = strlen(pid_str);
+    char *end = NULL;
+    const int64_t pid = strtol(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
+    if (pid_str == end) {
+        puts("Invalid PID! Exiting...");
+        return 1;
+    }
     const char* pattern = argv[2];
-
     search_data data;
+    data.pattern_len = strlen(pattern);
+
     parse_input(pattern, &data);
-    if (data.type != it_error_type) {
-        if (data.type == it_hex) {
-            pattern = (const char*)&data.value;
-        } // else --> it already points to the right thing
-    } else {
+    if (data.type == it_error_type) {
         return 1;
     }
 
@@ -191,7 +208,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    find_pattern(process, pattern);
+    find_pattern(process, data.pattern, data.pattern_len);
 
     CloseHandle(process);
     return 0;
