@@ -65,35 +65,35 @@ void print_page_type(DWORD state) {
 
 const char* get_page_protect(DWORD state) {
     // lets not comlicate things with other available options for now
-    state &= ~(0x100 | 0x200 | 0x400);
+    state &= ~(PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE);
 
     const char* result;
     switch (state) {
-    case 0x10:
+    case PAGE_EXECUTE:
         result = page_protect[0];
         break;
-    case 0x20:
+    case PAGE_EXECUTE_READ:
         result = page_protect[1];
         break;
-    case 0x40:
+    case PAGE_EXECUTE_READWRITE:
         result = page_protect[2];
         break;
-    case 0x80:
+    case PAGE_EXECUTE_WRITECOPY:
         result = page_protect[3];
         break;
-    case 0x01:
+    case PAGE_NOACCESS:
         result = page_protect[4];
         break;
-    case 0x02:
+    case PAGE_READONLY:
         result = page_protect[5];
         break;
-    case 0x04:
+    case PAGE_READWRITE:
         result = page_protect[6];
         break;
-    case 0x08:
+    case PAGE_WRITECOPY:
         result = page_protect[7];
         break;
-    case 0x40000000:
+    case PAGE_TARGETS_INVALID:
         result = page_protect[8];
         break;
     default:
