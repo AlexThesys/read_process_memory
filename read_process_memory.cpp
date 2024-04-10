@@ -1,10 +1,12 @@
-#include <stdio.h>
-#include <windows.h>
-#include <string.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <windows.h>
+#include <psapi.h>
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
+#define MAX_PATH 256
 
 enum input_type {
     it_hex,
@@ -29,32 +31,44 @@ int is_hex(const char *pattern, size_t pattern_len) {
         || ((pattern_len > 3) && (pattern[0] == '0' && pattern[1] == 'x')));
 }
 
+enum page_state_id {
+    psid_mem_commit = 0x1000,
+    psid_mem_free = 0x10000,
+    psid_mem_reserve = 0x2000
+};
+
 const char* get_page_state(DWORD state) {
     const char *result = NULL;
     switch (state) {
-    case 0x1000 :
+    case psid_mem_commit:
         result = page_state[0];
         break;
-    case 0x10000:
+    case psid_mem_free:
         result = page_state[1];
         break;
-    case 0x2000:
+    case psid_mem_reserve:
         result = page_state[2];
         break;
     }
     return result;
 }
 
+enum page_type_id {
+    ptid_mem_image = 0x1000000,
+    ptid_mem_mapped = 0x40000,
+    ptid_mem_private = 0x20000
+};
+
 const char* get_page_type(DWORD state) {
     const char* result = NULL;
     switch (state) {
-    case 0x1000000:
+    case ptid_mem_image:
         result = page_type[0];
         break;
-    case 0x40000:
+    case ptid_mem_mapped:
         result = page_type[1];
         break;
-    case 0x20000:
+    case ptid_mem_private:
         result = page_type[2];
         break;
     }
@@ -121,7 +135,7 @@ static void parse_input(const char* pattern, search_data *data) {
                 data->pattern = (const char*)&data->value;
                 data->pattern_len /= 2;
                 data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
-                puts("Searching for a a hex string.");
+                puts("Searching for a a hex string...\n");
             } else {
                 puts("Invalid hex value provided");
                 data->type = it_error_type;
@@ -130,7 +144,7 @@ static void parse_input(const char* pattern, search_data *data) {
     } else {
         data->type = it_ascii;
         data->pattern = pattern;
-        puts("Searching for a an ascii string.");
+        puts("Searching for a an ascii string...\n");
 
     }
 }
@@ -141,8 +155,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
     char *heap_buffer = NULL;
 
-    puts("Searching committed memory...");
-    size_t num_found = 0;
+    puts("Searching committed memory...\n");
+    size_t num_found_total = 0;
     for (p = NULL; VirtualQueryEx(process, p, &info, sizeof(info)) == sizeof(info); p += info.RegionSize) {
         if (info.State == MEM_COMMIT && (info.Type == MEM_MAPPED || info.Type == MEM_PRIVATE || info.Type == MEM_IMAGE)) {
             char* buffer = NULL;
@@ -157,11 +171,18 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
             SIZE_T bytes_read;
             ReadProcessMemory(process, p, buffer, info.RegionSize, &bytes_read);
 
-            int print_once = 1;
             if (bytes_read >= pattern_len) {
+                char module_name[MAX_PATH];
+                const int m_name_found = GetModuleFileNameA((HMODULE)info.AllocationBase, module_name, MAX_PATH);
+
+                int print_once = 1;
+                size_t num_found = 0;
                 for (int i = 0; i < bytes_read - pattern_len; i++) {
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
+                            if (m_name_found && (info.Type == ptid_mem_image)) {
+                                printf("Module name: %s\n", module_name);
+                            }
                             printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%x\nState: %s\tProtect: %s\tType: %s\n", 
                                 info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State), get_page_type(info.Type));
                             print_once = 0;
@@ -170,11 +191,15 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                         num_found++;
                     }
                 }
+                if (num_found) {
+                puts("");
+                num_found_total += num_found;
+                }
             }
             free(heap_buffer);
         }
     }
-    if (!num_found) {
+    if (!num_found_total) {
         puts("No matches found.");
     }
 }
@@ -206,6 +231,11 @@ int main(int argc, char** argv) {
     if (process == NULL) {
         fprintf(stderr, "Failed opening the process. Error code: %lu\n", GetLastError());
         return 1;
+    }
+
+    char proc_name[MAX_PATH];
+    if (GetModuleFileNameExA(process, NULL, proc_name, MAX_PATH)) {
+        printf("Process name: %s\n\n", proc_name);
     }
 
     find_pattern(process, data.pattern, data.pattern_len);
