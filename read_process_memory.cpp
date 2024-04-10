@@ -104,35 +104,32 @@ const char* get_page_protect(DWORD state) {
 }
  
 static void parse_input(const char* pattern, search_data *data) {
-    if (strlen(pattern) > MAX_PATTERN_LEN) {
+    if (data->pattern_len > MAX_PATTERN_LEN) {
         fprintf(stderr, "Pattern exceeded maximum size of %d. Exiting...", MAX_PATTERN_LEN);
         data->type = it_error_type;
         return;
     }
+    int64_t value = 0;
+    char* end;
+    value = strtoll(pattern, &end, 0x10);
+    const int is_hex = (pattern != end);
+    if (is_hex && (data->pattern_len > (sizeof(int64_t) * 2 + 2))) {
+        printf("Max supported hex value size: %d bytes!\n", sizeof(int64_t));
+        data->type = it_error_type;
+        return;
+    }
 
-    if (is_hex(pattern, data->pattern_len)) {
-        if (data->pattern_len > (sizeof(int64_t) * 2 + 2)) {
-            puts("Maximus supported search size is QWORD");
-            data->type = it_error_type;
-        } else {
-            char* end;
-            const int64_t value = strtoll(pattern, &end, 0x10);
-            if (pattern != end) {
-                data->type = it_hex;
-                data->value = value;
-                data->pattern = (const char*)&data->value;
-                data->pattern_len /= 2;
-                data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
-                puts("Searching for a a hex string...\n");
-            } else {
-                puts("Invalid hex value provided");
-                data->type = it_error_type;
-            }
-        }
+    if (is_hex) {
+        data->type = it_hex;
+        data->value = value;
+        data->pattern = (const char*)&data->value;
+        data->pattern_len /= 2;
+        data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
+        puts("Searching for a hex value...\n");
     } else {
         data->type = it_ascii;
         data->pattern = pattern;
-        puts("Searching for a an ascii string...\n");
+        puts("Searching for an ascii string...\n");
 
     }
 }
@@ -162,14 +159,17 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 
             if (bytes_read >= pattern_len) {
                 char module_name[MAX_PATH];
-                const int m_name_found = GetModuleFileNameExA(process, (HMODULE)info.AllocationBase, module_name, MAX_PATH);
+                int m_name_found = 0;
+                if (info.Type == MEM_IMAGE) {
+                    m_name_found = GetModuleFileNameExA(process, (HMODULE)info.AllocationBase, module_name, MAX_PATH);
+                }
 
                 int print_once = 1;
                 size_t num_found = 0;
                 for (int i = 0; i < bytes_read - pattern_len; i++) {
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
-                            if (m_name_found && (info.Type == MEM_IMAGE)) {
+                            if (m_name_found) {
                                 printf("Module name: %s\n", module_name);
                             }
                             printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%x\nState: %s\tProtect: %s\t", 
