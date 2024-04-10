@@ -123,7 +123,11 @@ static void parse_input(const char* pattern, search_data *data) {
         data->type = it_hex;
         data->value = value;
         data->pattern = (const char*)&data->value;
-        data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
+        if (*end == 'h' || *end == 'H') {
+            data->pattern_len -= 1;
+        } else if (pattern[0] == '0' && (pattern[1] == 'x' || pattern[1] == 'X')) {
+            data->pattern_len -= 2;
+        }
         data->pattern_len /= 2;
         puts("Searching for a hex value...\n");
     } else {
