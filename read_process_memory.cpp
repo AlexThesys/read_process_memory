@@ -17,7 +17,7 @@ enum input_type {
 
 typedef struct search_data {
     input_type type;
-    int64_t value;
+    uint64_t value;
     const char* pattern;
     size_t pattern_len;
 } search_data;
@@ -109,12 +109,12 @@ static void parse_input(const char* pattern, search_data *data) {
         data->type = it_error_type;
         return;
     }
-    int64_t value = 0;
+    uint64_t value = 0;
     char* end;
-    value = strtoll(pattern, &end, 0x10);
+    value = strtoull(pattern, &end, 0x10);
     const int is_hex = (pattern != end);
-    if (is_hex && (data->pattern_len > (sizeof(int64_t) * 2 + 2))) {
-        printf("Max supported hex value size: %d bytes!\n", sizeof(int64_t));
+    if (is_hex && (data->pattern_len > (sizeof(uint64_t) * 2 + 2))) {
+        printf("Max supported hex value size: %d bytes!\n", sizeof(uint64_t));
         data->type = it_error_type;
         return;
     }
@@ -123,14 +123,13 @@ static void parse_input(const char* pattern, search_data *data) {
         data->type = it_hex;
         data->value = value;
         data->pattern = (const char*)&data->value;
-        data->pattern_len /= 2;
         data->pattern_len -= (pattern[0] == '0') ? 2 : 1;
+        data->pattern_len /= 2;
         puts("Searching for a hex value...\n");
     } else {
         data->type = it_ascii;
         data->pattern = pattern;
         puts("Searching for an ascii string...\n");
-
     }
 }
 
@@ -166,7 +165,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 
                 int print_once = 1;
                 size_t num_found = 0;
-                for (int i = 0; i < bytes_read - pattern_len; i++) {
+                for (int i = 0, sz = bytes_read - pattern_len; i < sz; i++) {
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
                             if (m_name_found) {
@@ -203,7 +202,7 @@ int main(int argc, char** argv) {
     const char* pid_str = argv[1];
     const size_t pid_len = strlen(pid_str);
     char *end = NULL;
-    const int64_t pid = strtol(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
+    const uint64_t pid = strtoull(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
     if (pid_str == end) {
         puts("Invalid PID! Exiting...");
         return 1;
