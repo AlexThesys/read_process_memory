@@ -7,6 +7,7 @@
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
+#define MAX_PID_STR_LEN 16
 #define MAX_PATH 256
 
 enum input_type {
@@ -197,42 +198,73 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     }
 }
 
-int main(int argc, char** argv) {
-    if (argc != 3) {
-        fprintf(stderr, "Insufficient number of arguments!\n Usage: %s <PID> <pattern> in either hex or ascii\n", argv[0]);
-        return 1;
-    }
+int main() {
+    char pattern[MAX_PATTERN_LEN];
+    char pid_str[MAX_PID_STR_LEN];
+    int pid_len = -1;
+    int stop = 'n';
+    int res;
+    do {
+        int use_same_pid = 0;
+        if (pid_len != -1) {
+            puts("Use same PID? y/n");
+            while ((getchar()) != '\n'); // flush stdin
+            const int reuse_pid = getchar();
+            use_same_pid = (reuse_pid == (int)'y' || reuse_pid == (int)'Y');
+        }
 
-    const char* pid_str = argv[1];
-    const size_t pid_len = strlen(pid_str);
-    char *end = NULL;
-    const uint64_t pid = strtoull(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
-    if (pid_str == end) {
-        puts("Invalid PID! Exiting...");
-        return 1;
-    }
-    const char* pattern = argv[2];
-    search_data data;
-    data.pattern_len = strlen(pattern);
+        if (!use_same_pid) {
+            puts("Input PID: ");
+            res = scanf_s("%s", pid_str, sizeof(pid_str));
+            if (EOF == res || 0 == res) {
+                puts("Error reading PID!");
+                return 1;
+            }
+            pid_len = strlen(pid_str);
+        }
 
-    parse_input(pattern, &data);
-    if (data.type == it_error_type) {
-        return 1;
-    }
+        char* end = NULL;
+        const uint64_t pid = strtoull(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
+        if (pid_str == end) {
+            puts("Invalid PID! Exiting...");
+            return 1;
+        }
 
-    HANDLE process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
-    if (process == NULL) {
-        fprintf(stderr, "Failed opening the process. Error code: %lu\n", GetLastError());
-        return 1;
-    }
+        puts("Input pattern (hex value or ascii string): ");
+        res = scanf_s("%s", pattern, sizeof(pattern));
+        if (EOF == res || 0 == res) {
+            puts("Error reading pattern!");
+            return 1;
+        }
+        const int pattern_len = strlen(pattern);
 
-    char proc_name[MAX_PATH];
-    if (GetModuleFileNameExA(process, NULL, proc_name, MAX_PATH)) {
-        printf("Process name: %s\n\n", proc_name);
-    }
+        search_data data;
+        data.pattern_len = (size_t)pattern_len;
 
-    find_pattern(process, data.pattern, data.pattern_len);
+        parse_input(pattern, &data);
+        if (data.type == it_error_type) {
+            return 1;
+        }
 
-    CloseHandle(process);
+        HANDLE process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, pid);
+        if (process == NULL) {
+            fprintf(stderr, "Failed opening the process. Error code: %lu\n", GetLastError());
+            return 1;
+        }
+
+        char proc_name[MAX_PATH];
+        if (GetModuleFileNameExA(process, NULL, proc_name, MAX_PATH)) {
+            printf("Process name: %s\n\n", proc_name);
+        }
+
+        find_pattern(process, data.pattern, data.pattern_len);
+
+        CloseHandle(process);
+
+        puts("\n Continue search? y/n");
+        while ((getchar()) != '\n'); // flush stdin
+        stop = getchar();
+    } while (stop == (int)'y' || stop == (int)'Y');
+
     return 0;
 }
