@@ -3,6 +3,7 @@
 #include <string.h>
 #include <windows.h>
 #include <psapi.h>
+#include <assert.h>
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
@@ -14,12 +15,12 @@ enum input_type {
     it_error_type,
 };
 
-struct search_data {
+typedef struct search_data {
     input_type type;
     int64_t value;
     const char* pattern;
     size_t pattern_len;
-};
+} search_data;
 
 static const char* page_state[] = {"MEM_COMMIT", "MEM_FREE", "MEM_RESERVE"};
 static const char* page_type[] = {"MEM_IMAGE", "MEM_MAPPED", "MEM_PRIVATE"};
@@ -31,48 +32,35 @@ int is_hex(const char *pattern, size_t pattern_len) {
         || ((pattern_len > 3) && (pattern[0] == '0' && pattern[1] == 'x')));
 }
 
-enum page_state_id {
-    psid_mem_commit = 0x1000,
-    psid_mem_free = 0x10000,
-    psid_mem_reserve = 0x2000
-};
-
 const char* get_page_state(DWORD state) {
     const char *result = NULL;
     switch (state) {
-    case psid_mem_commit:
+    case MEM_COMMIT:
         result = page_state[0];
         break;
-    case psid_mem_free:
+    case MEM_FREE:
         result = page_state[1];
         break;
-    case psid_mem_reserve:
+    case MEM_RESERVE:
         result = page_state[2];
         break;
     }
     return result;
 }
 
-enum page_type_id {
-    ptid_mem_image = 0x1000000,
-    ptid_mem_mapped = 0x40000,
-    ptid_mem_private = 0x20000
-};
-
-const char* get_page_type(DWORD state) {
-    const char* result = NULL;
-    switch (state) {
-    case ptid_mem_image:
-        result = page_type[0];
-        break;
-    case ptid_mem_mapped:
-        result = page_type[1];
-        break;
-    case ptid_mem_private:
-        result = page_type[2];
-        break;
+void print_page_type(DWORD state) {
+    printf("Type:");
+    if (state == MEM_IMAGE) {
+        printf(" %s\n", page_type[0]);
+    } else {
+        if (state & MEM_MAPPED) {
+            printf(" %s ", page_type[1]);
+        }
+        if (state & MEM_PRIVATE) {
+            printf(" %s ", page_type[2]);
+        }
+        puts("");
     }
-    return result;
 }
 
 const char* get_page_protect(DWORD state) {
@@ -158,7 +146,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     puts("Searching committed memory...\n");
     size_t num_found_total = 0;
     for (p = NULL; VirtualQueryEx(process, p, &info, sizeof(info)) == sizeof(info); p += info.RegionSize) {
-        if (info.State == MEM_COMMIT && (info.Type == MEM_MAPPED || info.Type == MEM_PRIVATE || info.Type == MEM_IMAGE)) {
+        if (info.State == MEM_COMMIT) {
+            assert((info.Type == MEM_MAPPED || info.Type == MEM_PRIVATE || info.Type == MEM_IMAGE));
             char* buffer = NULL;
             if (info.RegionSize <= MAX_BUFFER_SIZE) {
                 buffer = stack_buffer;
@@ -180,11 +169,12 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                 for (int i = 0; i < bytes_read - pattern_len; i++) {
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
-                            if (m_name_found && (info.Type == ptid_mem_image)) {
+                            if (m_name_found && (info.Type == MEM_IMAGE)) {
                                 printf("Module name: %s\n", module_name);
                             }
-                            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%x\nState: %s\tProtect: %s\tType: %s\n", 
-                                info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State), get_page_type(info.Type));
+                            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%x\nState: %s\tProtect: %s\t", 
+                                info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
+                            print_page_type(info.Type);
                             print_once = 0;
                         }
                         printf("Match at address: 0x%p\n", p + i);
