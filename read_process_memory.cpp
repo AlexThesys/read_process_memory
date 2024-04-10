@@ -162,7 +162,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 
             if (bytes_read >= pattern_len) {
                 char module_name[MAX_PATH];
-                const int m_name_found = GetModuleFileNameA((HMODULE)info.AllocationBase, module_name, MAX_PATH);
+                const int m_name_found = GetModuleFileNameExA(process, (HMODULE)info.AllocationBase, module_name, MAX_PATH);
 
                 int print_once = 1;
                 size_t num_found = 0;
