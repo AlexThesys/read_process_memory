@@ -8,7 +8,6 @@
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
 #define MAX_PID_STR_LEN 16
-#define MAX_PATH 256
 
 enum input_type {
     it_hex,
@@ -115,7 +114,7 @@ static void parse_input(const char* pattern, search_data *data) {
     value = strtoull(pattern, &end, 0x10);
     const int is_hex = (pattern != end);
     if (is_hex && (data->pattern_len > (sizeof(uint64_t) * 2 + 2))) {
-        printf("Max supported hex value size: %d bytes!\n", sizeof(uint64_t));
+        printf("Max supported hex value size: %d bytes!\n", (int)sizeof(uint64_t));
         data->type = it_error_type;
         return;
     }
@@ -170,13 +169,13 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 
                 int print_once = 1;
                 size_t num_found = 0;
-                for (int i = 0, sz = bytes_read - pattern_len; i < sz; i++) {
+                for (size_t i = 0, sz = bytes_read - pattern_len; i < sz; i++) {
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
                             if (m_name_found) {
                                 printf("Module name: %s\n", module_name);
                             }
-                            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%x\nState: %s\tProtect: %s\t", 
+                            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t", 
                                 info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
                             print_page_type(info.Type);
                             print_once = 0;
@@ -201,7 +200,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 int main() {
     char pattern[MAX_PATTERN_LEN];
     char pid_str[MAX_PID_STR_LEN];
-    int pid_len = -1;
+    size_t pid_len = -1;
     int stop = 'n';
     int res;
     do {
@@ -215,7 +214,7 @@ int main() {
 
         if (!use_same_pid) {
             puts("Input PID: ");
-            res = scanf_s("%s", pid_str, sizeof(pid_str));
+            res = scanf_s("%s", pid_str, (unsigned int)sizeof(pid_str));
             if (EOF == res || 0 == res) {
                 puts("Error reading PID!");
                 return 1;
@@ -224,22 +223,22 @@ int main() {
         }
 
         char* end = NULL;
-        const uint64_t pid = strtoull(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
+        const DWORD pid = strtoul(pid_str, &end, is_hex(pid_str, pid_len) ? 16 : 10);
         if (pid_str == end) {
             puts("Invalid PID! Exiting...");
             return 1;
         }
 
         puts("Input pattern (hex value or ascii string): ");
-        res = scanf_s("%s", pattern, sizeof(pattern));
+        res = scanf_s("%s", pattern, (unsigned int)sizeof(pattern));
         if (EOF == res || 0 == res) {
             puts("Error reading pattern!");
             return 1;
         }
-        const int pattern_len = strlen(pattern);
+        const size_t pattern_len = strlen(pattern);
 
         search_data data;
-        data.pattern_len = (size_t)pattern_len;
+        data.pattern_len = pattern_len;
 
         parse_input(pattern, &data);
         if (data.type == it_error_type) {
