@@ -151,7 +151,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
     char *heap_buffer = NULL;
 
-    puts("Searching committed memory...\n");
+    puts("Searching committed memory...");
+    puts("\n------------------------------------\n");
     size_t num_found_total = 0;
     for (p = NULL; VirtualQueryEx(process, p, &info, sizeof(info)) == sizeof(info); p += info.RegionSize) {
         if (info.State == MEM_COMMIT) {
@@ -181,6 +182,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                     if (memcmp(buffer + i, pattern, pattern_len) == 0) {
                         if (print_once) {
                             if (m_name_found) {
+                                puts("------------------------------------\n");
+
                                 printf("Module name: %s\n", module_name);
                             }
                             printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t", 
@@ -263,7 +266,7 @@ int main() {
                 puts("\n\n====================================\n");
             }
 
-            puts("Travers process's heap list? y/n");
+            puts("Travers process's heap list (slow)? y/n");
             while ((getchar()) != '\n'); // flush stdin
             symbol = getchar();
             if (symbol == (int)'y' || symbol == (int)'Y') {
@@ -303,7 +306,7 @@ int main() {
 
         CloseHandle(process);
 
-        puts("\n====================================\n");
+        puts("====================================\n");
         puts("\nContinue search? y/n");
         while ((getchar()) != '\n'); // flush stdin
         stop = getchar();
@@ -320,8 +323,7 @@ static int list_processes() {
 
     // Take a snapshot of all processes in the system.
     hProcessSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hProcessSnap == INVALID_HANDLE_VALUE)
-    {
+    if (hProcessSnap == INVALID_HANDLE_VALUE) {
         print_error(TEXT("CreateToolhelp32Snapshot (of processes)"));
         return(FALSE);
     }
@@ -331,8 +333,7 @@ static int list_processes() {
 
     // Retrieve information about the first process,
     // and exit if unsuccessful
-    if (!Process32First(hProcessSnap, &pe32))
-    {
+    if (!Process32First(hProcessSnap, &pe32)) {
         print_error(TEXT("Process32First")); // show cause of failure
         CloseHandle(hProcessSnap);          // clean the snapshot object
         return(FALSE);
@@ -340,8 +341,7 @@ static int list_processes() {
 
     // Now walk the snapshot of processes, and
     // display information about each process in turn
-    do
-    {
+    do {
         _tprintf(TEXT("\n\n====================================================="));
         _tprintf(TEXT("\nPROCESS NAME:  %s"), pe32.szExeFile);
         _tprintf(TEXT("\n-------------------------------------------------------"));
@@ -349,10 +349,9 @@ static int list_processes() {
         // Retrieve the priority class.
         dwPriorityClass = 0;
         hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pe32.th32ProcessID);
-        if (hProcess == NULL)
+        if (hProcess == NULL) {
             print_error(TEXT("OpenProcess"));
-        else
-        {
+        } else {
             dwPriorityClass = GetPriorityClass(hProcess);
             if (!dwPriorityClass)
                 print_error(TEXT("GetPriorityClass"));
@@ -378,8 +377,7 @@ static int list_process_modules(DWORD dw_pid) {
 
     // Take a snapshot of all modules in the specified process.
     hModuleSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, dw_pid);
-    if (hModuleSnap == INVALID_HANDLE_VALUE)
-    {
+    if (hModuleSnap == INVALID_HANDLE_VALUE) {
         print_error(TEXT("CreateToolhelp32Snapshot (of modules)"));
         return(FALSE);
     }
@@ -389,8 +387,7 @@ static int list_process_modules(DWORD dw_pid) {
 
     // Retrieve information about the first module,
     // and exit if unsuccessful
-    if (!Module32First(hModuleSnap, &me32))
-    {
+    if (!Module32First(hModuleSnap, &me32)) {
         print_error(TEXT("Module32First"));  // show cause of failure
         CloseHandle(hModuleSnap);           // clean the snapshot object
         return(FALSE);
@@ -398,15 +395,14 @@ static int list_process_modules(DWORD dw_pid) {
 
     // Now walk the module list of the process,
     // and display information about each module
-    do
-    {
+    do {
         _tprintf(TEXT("\n\n     MODULE NAME:     %s"), me32.szModule);
         _tprintf(TEXT("\n     Executable     = %s"), me32.szExePath);
         _tprintf(TEXT("\n     Process ID     = 0x%08X"), me32.th32ProcessID);
         _tprintf(TEXT("\n     Ref count (g)  = 0x%04X"), me32.GlblcntUsage);
         _tprintf(TEXT("\n     Ref count (p)  = 0x%04X"), me32.ProccntUsage);
         _tprintf(TEXT("\n     Base address   = 0x%08X"), (DWORD)me32.modBaseAddr);
-        _tprintf(TEXT("\n     Base size      = %d"), me32.modBaseSize);
+        _tprintf(TEXT("\n     Base size      = 0x%x"), me32.modBaseSize);
 
     } while (Module32Next(hModuleSnap, &me32));
 
@@ -414,9 +410,21 @@ static int list_process_modules(DWORD dw_pid) {
     return(TRUE);
 }
 
+static DWORD_PTR get_thread_stack_base(HANDLE hThread) {
+    CONTEXT context;
+    context.ContextFlags = CONTEXT_CONTROL;
+    GetThreadContext(hThread, &context);
+#ifdef _WIN64
+    return context.Rsp; // Stack pointer for 64-bit
+#else
+    return context.Esp; // Stack pointer for 32-bit
+#endif
+}
+
 static int list_process_threads(DWORD dw_owner_pid) {
     HANDLE hThreadSnap = INVALID_HANDLE_VALUE;
     THREADENTRY32 te32;
+    DWORD_PTR stackBase = NULL;
 
     // Take a snapshot of all running threads  
     hThreadSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -428,8 +436,7 @@ static int list_process_threads(DWORD dw_owner_pid) {
 
     // Retrieve information about the first thread,
     // and exit if unsuccessful
-    if (!Thread32First(hThreadSnap, &te32))
-    {
+    if (!Thread32First(hThreadSnap, &te32)) {
         print_error(TEXT("Thread32First")); // show cause of failure
         CloseHandle(hThreadSnap);          // clean the snapshot object
         return(FALSE);
@@ -438,13 +445,18 @@ static int list_process_threads(DWORD dw_owner_pid) {
     // Now walk the thread list of the system,
     // and display information about each thread
     // associated with the specified process
-    do
-    {
-        if (te32.th32OwnerProcessID == dw_owner_pid)
-        {
-            _tprintf(TEXT("\n\n     THREAD ID      = 0x%08X"), te32.th32ThreadID);
-            _tprintf(TEXT("\n     Base priority  = %d"), te32.tpBasePri);
-            _tprintf(TEXT("\n     Delta priority = %d"), te32.tpDeltaPri);
+    do {
+        if (te32.th32OwnerProcessID == dw_owner_pid) {
+            HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, te32.th32ThreadID);
+            if (hThread != NULL) {
+                stackBase = get_thread_stack_base(hThread);
+                CloseHandle(hThread);
+            }
+
+            _tprintf(TEXT("\n\n     THREAD ID         = 0x%08X"), te32.th32ThreadID);
+            _tprintf(TEXT("\n     Base priority     = %d"), te32.tpBasePri);
+            _tprintf(TEXT("\n     Delta priority    = %d"), te32.tpDeltaPri);
+            _tprintf(TEXT("\n     Stack Base        = 0x%p"), stackBase);
             _tprintf(TEXT("\n"));
         }
     } while (Thread32Next(hThreadSnap, &te32));
@@ -460,35 +472,30 @@ static int traverse_heap_list(DWORD dw_pid) {
 
     hl.dwSize = sizeof(HEAPLIST32);
 
-    if (hHeapSnap == INVALID_HANDLE_VALUE)
-    {
+    if (hHeapSnap == INVALID_HANDLE_VALUE) {
         printf("CreateToolhelp32Snapshot failed (%d)\n", GetLastError());
         return 1;
     }
 
-    if (Heap32ListFirst(hHeapSnap, &hl))
-    {
-        do
-        {
+    if (Heap32ListFirst(hHeapSnap, &hl)) {
+        do {
             HEAPENTRY32 he;
             ZeroMemory(&he, sizeof(HEAPENTRY32));
             he.dwSize = sizeof(HEAPENTRY32);
 
-            if (Heap32First(&he, dw_pid, hl.th32HeapID))
-            {
-                printf("\nHeap ID: %d\n", hl.th32HeapID);
-                do
-                {
-                    printf("Start address: %p Block size: %d\n", he.dwAddress, he.dwBlockSize);
+            if (Heap32First(&he, dw_pid, hl.th32HeapID)) {
+                printf("\nHeap ID: 0x%x\n", hl.th32HeapID);
+                do {
+                    printf("Start address: 0x%p Block size: 0x%x\n", he.dwAddress, he.dwBlockSize);
 
                     he.dwSize = sizeof(HEAPENTRY32);
                 } while (Heap32Next(&he));
             }
             hl.dwSize = sizeof(HEAPLIST32);
         } while (Heap32ListNext(hHeapSnap, &hl));
+    } else {
+        printf("Cannot list first heap (%d)\n", GetLastError());
     }
-    else printf("Cannot list first heap (%d)\n", GetLastError());
-
     CloseHandle(hHeapSnap);
 
     return 0;
