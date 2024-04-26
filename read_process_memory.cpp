@@ -150,6 +150,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     MEMORY_BASIC_INFORMATION info;
     char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
     char *heap_buffer = NULL;
+    size_t heap_buffer_size = 0;
 
     puts("Searching committed memory...");
     puts("\n------------------------------------\n");
@@ -160,9 +161,17 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
             char* buffer = NULL;
             if (info.RegionSize <= MAX_BUFFER_SIZE) {
                 buffer = stack_buffer;
-                heap_buffer = NULL;
             } else {
-                heap_buffer = (char*)malloc(info.RegionSize);
+                if (info.RegionSize > heap_buffer_size) {
+                    heap_buffer_size = info.RegionSize;
+                    char* ptr = (char*)realloc(heap_buffer, heap_buffer_size);
+                    if (ptr != NULL) {
+                        heap_buffer = ptr;
+                    } else {
+                        puts("Heap allocation failed!");
+                        return;
+                    }
+                }
                 buffer = heap_buffer;
             }
 
@@ -200,9 +209,10 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                 num_found_total += num_found;
                 }
             }
-            free(heap_buffer);
         }
     }
+    free(heap_buffer);
+
     if (!num_found_total) {
         puts("No matches found.");
     }
