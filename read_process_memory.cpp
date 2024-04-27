@@ -270,8 +270,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
         {
             std::unique_lock<std::mutex> lk(g_mtx);
             g_memory_usage_bytes -= region_size;
-            g_cv.notify_all();
         }
+        g_cv.notify_all(); // permitted to be called concurrentely
     }
 
     size_t num_matches = 0;
