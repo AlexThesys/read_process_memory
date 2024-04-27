@@ -7,6 +7,8 @@
 #include <tchar.h>
 #include <assert.h>
 #include <emmintrin.h>
+#include <omp.h>
+#include <vector> // temp
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
@@ -190,12 +192,16 @@ static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t
     return NULL;
 }
 
+#define MIN_NUM_BLOCKS 0x10
+
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     unsigned char* p = NULL;
     MEMORY_BASIC_INFORMATION info;
     char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
     char *heap_buffer = NULL;
     size_t heap_buffer_size = 0;
+    const size_t num_hw_threads = omp_get_num_procs();
+    constexpr size_t min_buffer_block_size = sizeof(__m128) * MIN_NUM_BLOCKS;
 
     puts("Searching committed memory...");
     puts("\n------------------------------------\n");
@@ -230,37 +236,49 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                     m_name_found = GetModuleFileNameExA(process, (HMODULE)info.AllocationBase, module_name, MAX_PATH);
                 }
 
-                int print_once = 1;
-                size_t num_found = 0;
-                const char* buffer_ptr = buffer;
-                size_t buffer_size = info.RegionSize;
+                const size_t buffer_block_size = _max(min_buffer_block_size, info.RegionSize / num_hw_threads);
+                const size_t num_blocks = info.RegionSize / buffer_block_size;
+                std::vector<size_t> block_sizes(num_blocks, buffer_block_size);
+                block_sizes[0] += info.RegionSize - (buffer_block_size * num_blocks);
+                std::vector<const char*> block_ptrs(num_blocks);
+                block_ptrs[0] = buffer;
+                for (int i = 1; i < num_blocks; i++) {
+                    block_ptrs[i] = block_ptrs[i - 1] + block_sizes[i - 1];
+                }
+                std::vector<std::vector<const char*>> matches(num_blocks);
 
-                while (buffer_size >= pattern_len) {
-                    const char* old_buf_ptr = buffer_ptr;
-                    buffer_ptr = (const char*)strstr_u8((const uint8_t*)buffer_ptr, buffer_size, (const uint8_t*)pattern, pattern_len);
-                    if (!buffer_ptr) {
-                        break;
-                    }
-
-                    if (print_once) {
-                        if (m_name_found) {
-                            puts("------------------------------------\n");
-                            printf("Module name: %s\n", module_name);
+                volatile int num_found = 0;
+#pragma omp parallel for schedule(dynamic, 1) shared(block_sizes,block_ptrs,matches,num_found)
+                for (int i = 0; i < num_blocks; i++) {
+                    while (block_sizes[i] >= pattern_len) {
+                        const char* old_buf_ptr = block_ptrs[i];
+                        block_ptrs[i] = (const char*)strstr_u8((const uint8_t*)block_ptrs[i], block_sizes[i], (const uint8_t*)pattern, pattern_len);
+                        if (!block_ptrs[i]) {
+                            break;
                         }
-                        printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
-                            info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
-                        print_page_type(info.Type);
-                        print_once = 0;
-                    }
-                    const size_t buffer_offset = buffer_ptr - buffer;
-                    printf("Match at address: 0x%p\n", p + buffer_offset);
 
-                    num_found++;
-                    buffer_ptr++;
-                    buffer_size -= (buffer_ptr - old_buf_ptr);
+                        const size_t buffer_offset = block_ptrs[i] - buffer;
+                        matches[i].push_back((const char*)p + buffer_offset);
+
+                        num_found = 1; // atomic store
+                        block_ptrs[i]++;
+                        block_sizes[i] -= (block_ptrs[i] - old_buf_ptr);
+                    }
                 }
 
                 if (num_found) {
+                    if (m_name_found) {
+                        puts("------------------------------------\n");
+                        printf("Module name: %s\n", module_name);
+                    }
+                    printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
+                        info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
+                    print_page_type(info.Type);
+                    for (int i = 0; i < num_blocks; i++) {
+                        for (int j = 0, sz = matches[i].size(); j < sz; j++) {
+                            printf("Match at address: 0x%p\n", matches[i][j]);
+                        }
+                    }
                     puts("");
                     num_found_total += num_found;
                 }
