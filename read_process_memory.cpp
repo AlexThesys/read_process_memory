@@ -16,7 +16,7 @@
 #define MAX_PATTERN_LEN 0x40
 #define MAX_PID_STR_LEN 16
 #define MAX_OMP_THREADS 8
-#define MAX_MEMORY_USAGE_BYTES 0X40000000
+#define MAX_MEMORY_USAGE_IDEAL 0X40000000
 
 enum input_type {
     it_hex,
@@ -204,6 +204,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     std::vector<std::vector<const char*>> match;
     std::vector<const char*> p;
     std::vector<MEMORY_BASIC_INFORMATION> info;
+    size_t max_memory_usage = MAX_MEMORY_USAGE_IDEAL;
 
     puts("Searching committed memory...");
     puts("\n------------------------------------\n");
@@ -214,6 +215,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
             if (_info.State == MEM_COMMIT) {
                 info.push_back(_info);
                 p.push_back(_p);
+                max_memory_usage = _max(max_memory_usage, _info.RegionSize);
             }
         }
     }
@@ -225,30 +227,30 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 #pragma omp parallel for schedule(dynamic, 1) shared(match,p,info)
     for (int64_t i = 0;  i < (int64_t)num_regions; i++) {
         assert((info[i].Type == MEM_MAPPED || info[i].Type == MEM_PRIVATE || info[i].Type == MEM_IMAGE));
-
+        const size_t region_size = info[i].RegionSize;
         {
             std::unique_lock<std::mutex> lk(g_mtx);
             while (true) {
-                g_cv.wait(lk, [] { return (g_memory_usage_bytes < MAX_MEMORY_USAGE_BYTES); });
-                if (g_memory_usage_bytes < MAX_MEMORY_USAGE_BYTES) {
-                    g_memory_usage_bytes += info[i].RegionSize;
+                g_cv.wait(lk, [max_memory_usage] { return (g_memory_usage_bytes < max_memory_usage); });
+                if (g_memory_usage_bytes < max_memory_usage) {
+                    g_memory_usage_bytes += region_size;
                     break;
                 }
             }
         }
 
-        char* buffer = (char*)malloc(info[i].RegionSize);
+        char* buffer = (char*)malloc(region_size);
         if (!buffer) {
             puts("Heap allocation failed!");
             break;;
         }
 
         SIZE_T bytes_read;
-        ReadProcessMemory(process, p[i], buffer, info[i].RegionSize, &bytes_read);
+        ReadProcessMemory(process, p[i], buffer, region_size, &bytes_read);
 
         if (bytes_read >= pattern_len) {
             const char* buffer_ptr = buffer;
-            size_t buffer_size = info[i].RegionSize;
+            size_t buffer_size = region_size;
 
             while (buffer_size >= pattern_len) {
                 const char* old_buf_ptr = buffer_ptr;
@@ -267,7 +269,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
         free(buffer);
         {
             std::unique_lock<std::mutex> lk(g_mtx);
-            g_memory_usage_bytes -= info[i].RegionSize;
+            g_memory_usage_bytes -= region_size;
             g_cv.notify_all();
         }
     }
