@@ -8,12 +8,15 @@
 #include <assert.h>
 #include <emmintrin.h>
 #include <omp.h>
+#include <mutex>
+#include <condition_variable>
 #include <vector> // temp
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
 #define MAX_PID_STR_LEN 16
 #define MAX_OMP_THREADS 8
+#define MAX_MEMORY_USAGE_BYTES 0X40000000
 
 enum input_type {
     it_hex,
@@ -193,6 +196,10 @@ static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t
     return NULL;
 }
 
+std::mutex g_mtx;
+std::condition_variable g_cv;
+LONG g_memory_usage_bytes = 0; // accessed from different threads
+
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     std::vector<std::vector<const char*>> match;
     std::vector<const char*> p;
@@ -214,15 +221,26 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     match.resize(num_regions);
 
     const int num_threads = _min(MAX_OMP_THREADS, omp_get_num_procs());
-    omp_set_num_threads(num_threads);
-    
+    omp_set_num_threads(num_threads);   
 #pragma omp parallel for schedule(dynamic, 1) shared(match,p,info)
     for (int64_t i = 0;  i < (int64_t)num_regions; i++) {
         assert((info[i].Type == MEM_MAPPED || info[i].Type == MEM_PRIVATE || info[i].Type == MEM_IMAGE));
+
+        {
+            std::unique_lock<std::mutex> lk(g_mtx);
+            while (true) {
+                g_cv.wait(lk, [] { return (g_memory_usage_bytes < MAX_MEMORY_USAGE_BYTES); });
+                if (g_memory_usage_bytes < MAX_MEMORY_USAGE_BYTES) {
+                    g_memory_usage_bytes += info[i].RegionSize;
+                    break;
+                }
+            }
+        }
+
         char* buffer = (char*)malloc(info[i].RegionSize);
         if (!buffer) {
             puts("Heap allocation failed!");
-            continue;
+            break;;
         }
 
         SIZE_T bytes_read;
@@ -247,6 +265,11 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
             }
         }
         free(buffer);
+        {
+            std::unique_lock<std::mutex> lk(g_mtx);
+            g_memory_usage_bytes -= info[i].RegionSize;
+            g_cv.notify_all();
+        }
     }
 
     size_t num_matches = 0;
