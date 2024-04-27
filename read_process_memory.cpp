@@ -245,8 +245,8 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
                 buffer_ptr++;
                 buffer_size -= (buffer_ptr - old_buf_ptr);
             }
-            free(buffer);
         }
+        free(buffer);
     }
 
     size_t num_matches = 0;
