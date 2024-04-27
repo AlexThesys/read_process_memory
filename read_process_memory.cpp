@@ -7,10 +7,13 @@
 #include <tchar.h>
 #include <assert.h>
 #include <emmintrin.h>
+#include <omp.h>
+#include <vector> // temp
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
 #define MAX_PID_STR_LEN 16
+#define MAX_OMP_THREADS 8
 
 enum input_type {
     it_hex,
@@ -191,85 +194,84 @@ static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t
 }
 
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
-    unsigned char* p = NULL;
-    MEMORY_BASIC_INFORMATION info;
-    char stack_buffer[MAX_BUFFER_SIZE]; // Assuming a maximum block size of 4096 bytes
-    char *heap_buffer = NULL;
-    size_t heap_buffer_size = 0;
+    std::vector<std::vector<const char*>> match;
+    std::vector<const char*> p;
+    std::vector<MEMORY_BASIC_INFORMATION> info;
 
     puts("Searching committed memory...");
     puts("\n------------------------------------\n");
-    size_t num_found_total = 0;
-    for (p = NULL; VirtualQueryEx(process, p, &info, sizeof(info)) == sizeof(info); p += info.RegionSize) {
-        if (info.State == MEM_COMMIT) {
-            assert((info.Type == MEM_MAPPED || info.Type == MEM_PRIVATE || info.Type == MEM_IMAGE));
-            char* buffer = NULL;
-            if (info.RegionSize <= MAX_BUFFER_SIZE) {
-                buffer = stack_buffer;
-            } else {
-                if (info.RegionSize > heap_buffer_size) {
-                    heap_buffer_size = info.RegionSize;
-                    char* ptr = (char*)realloc(heap_buffer, heap_buffer_size);
-                    if (ptr != NULL) {
-                        heap_buffer = ptr;
-                    } else {
-                        puts("Heap allocation failed!");
-                        return;
-                    }
-                }
-                buffer = heap_buffer;
-            }
-
-            SIZE_T bytes_read;
-            ReadProcessMemory(process, p, buffer, info.RegionSize, &bytes_read);
-
-            if (bytes_read >= pattern_len) {
-                char module_name[MAX_PATH];
-                int m_name_found = 0;
-                if (info.Type == MEM_IMAGE) {
-                    m_name_found = GetModuleFileNameExA(process, (HMODULE)info.AllocationBase, module_name, MAX_PATH);
-                }
-
-                int print_once = 1;
-                size_t num_found = 0;
-                const char* buffer_ptr = buffer;
-                size_t buffer_size = info.RegionSize;
-
-                while (buffer_size >= pattern_len) {
-                    const char* old_buf_ptr = buffer_ptr;
-                    buffer_ptr = (const char*)strstr_u8((const uint8_t*)buffer_ptr, buffer_size, (const uint8_t*)pattern, pattern_len);
-                    if (!buffer_ptr) {
-                        break;
-                    }
-
-                    if (print_once) {
-                        if (m_name_found) {
-                            puts("------------------------------------\n");
-                            printf("Module name: %s\n", module_name);
-                        }
-                        printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
-                            info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
-                        print_page_type(info.Type);
-                        print_once = 0;
-                    }
-                    const size_t buffer_offset = buffer_ptr - buffer;
-                    printf("Match at address: 0x%p\n", p + buffer_offset);
-
-                    num_found++;
-                    buffer_ptr++;
-                    buffer_size -= (buffer_ptr - old_buf_ptr);
-                }
-
-                if (num_found) {
-                    puts("");
-                    num_found_total += num_found;
-                }
+    {
+        const char* _p = NULL;
+        MEMORY_BASIC_INFORMATION _info;
+        for (_p = NULL; VirtualQueryEx(process, _p, &_info, sizeof(_info)) == sizeof(_info); _p += _info.RegionSize) {
+            if (_info.State == MEM_COMMIT) {
+                info.push_back(_info);
+                p.push_back(_p);
             }
         }
     }
-    free(heap_buffer);
+    const size_t num_regions = info.size();
+    match.resize(num_regions);
 
-    if (!num_found_total) {
+    const int num_threads = _min(MAX_OMP_THREADS, omp_get_num_procs());
+    omp_set_num_threads(num_threads);
+    
+#pragma omp parallel for schedule(dynamic, 1) shared(match,p,info)
+    for (int64_t i = 0;  i < (int64_t)num_regions; i++) {
+        assert((info[i].Type == MEM_MAPPED || info[i].Type == MEM_PRIVATE || info[i].Type == MEM_IMAGE));
+        char* buffer = (char*)malloc(info[i].RegionSize);
+        if (!buffer) {
+            puts("Heap allocation failed!");
+            continue;
+        }
+
+        SIZE_T bytes_read;
+        ReadProcessMemory(process, p[i], buffer, info[i].RegionSize, &bytes_read);
+
+        if (bytes_read >= pattern_len) {
+            const char* buffer_ptr = buffer;
+            size_t buffer_size = info[i].RegionSize;
+
+            while (buffer_size >= pattern_len) {
+                const char* old_buf_ptr = buffer_ptr;
+                buffer_ptr = (const char*)strstr_u8((const uint8_t*)buffer_ptr, buffer_size, (const uint8_t*)pattern, pattern_len);
+                if (!buffer_ptr) {
+                    break;
+                }
+
+                const size_t buffer_offset = buffer_ptr - buffer;
+                match[i].push_back(p[i] + buffer_offset);
+
+                buffer_ptr++;
+                buffer_size -= (buffer_ptr - old_buf_ptr);
+            }
+            free(buffer);
+        }
+    }
+
+    size_t num_matches = 0;
+    for (size_t i = 0; i < num_regions; i++) {
+        if (match[i].size()) {
+            if (info[i].Type == MEM_IMAGE) {
+                char module_name[MAX_PATH];
+                if (GetModuleFileNameExA(process, (HMODULE)info[i].AllocationBase, module_name, MAX_PATH)) {
+                    puts("------------------------------------\n");
+                    printf("Module name: %s\n", module_name);
+                }
+            }
+            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
+                info[i].BaseAddress, info[i].AllocationBase, info[i].RegionSize, get_page_protect(info[i].Protect), get_page_state(info[i].State));
+            print_page_type(info[i].Type);
+            for (const char* m : match[i]) {
+                printf("Match at address: 0x%p\n", m);
+            }
+
+            puts("");
+            num_matches++;
+        }
+    }
+
+    if (!num_matches) {
         puts("No matches found.");
     }
 }
