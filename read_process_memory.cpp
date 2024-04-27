@@ -6,6 +6,7 @@
 #include <tlhelp32.h>
 #include <tchar.h>
 #include <assert.h>
+#include <emmintrin.h>
 
 #define MAX_BUFFER_SIZE 0x1000
 #define MAX_PATTERN_LEN 0x40
@@ -145,6 +146,50 @@ static void parse_input(const char* pattern, search_data *data) {
     }
 }
 
+#define _max(x,y) (x) > (y) ? (x) : (y)
+#define _min(x,y) (x) < (y) ? (x) : (y)
+#define step (sizeof(__m128i) / sizeof(uint8_t))
+
+static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t* substr, size_t substr_sz) {
+    if (/*!substr_sz || */(str_sz < substr_sz))
+        return NULL;
+
+    const __m128i first = _mm_set1_epi8(substr[0]);
+    const __m128i last = _mm_set1_epi8(substr[substr_sz - 1]);
+    const uint8_t skip_first = (uint8_t)(substr_sz > 2);
+    const size_t cmp_size = substr_sz - (1llu << skip_first);
+
+    for (size_t j = 0, sz = str_sz - substr_sz; j <= sz; j += step) {
+        const uint8_t* f = str + j;
+        const uint8_t* l = str + j + substr_sz - 1;
+        __m128i xmm0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(f));
+        __m128i xmm1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(l));
+
+        xmm0 = _mm_cmpeq_epi8(first, xmm0);
+        xmm1 = _mm_cmpeq_epi8(last, xmm1);
+        xmm0 = _mm_and_si128(xmm0, xmm1);
+
+        uint32_t mask = (uint32_t)_mm_movemask_epi8(xmm0);
+
+        const uint8_t max_offset = (uint8_t)_min(step, str_sz - (j + substr_sz) + 1);
+        const uint32_t max_offset_mask = (1 << max_offset) - 1;
+        mask &= max_offset_mask;
+        unsigned long bit = 0;
+
+        while (_BitScanForward(&bit, mask)) {
+            const uint32_t offset = bit;
+            const uint8_t* m0 = str + j + offset + skip_first;
+            const uint8_t* m1 = substr + skip_first;
+            if (memcmp(m0, m1, cmp_size) == 0)
+                return (str + j + offset);
+
+            mask ^= (1 << bit); // clear bit
+        }
+    }
+
+    return NULL;
+}
+
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     unsigned char* p = NULL;
     MEMORY_BASIC_INFORMATION info;
@@ -187,26 +232,37 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 
                 int print_once = 1;
                 size_t num_found = 0;
-                for (size_t i = 0, sz = bytes_read - pattern_len; i < sz; i++) {
-                    if (memcmp(buffer + i, pattern, pattern_len) == 0) {
-                        if (print_once) {
-                            if (m_name_found) {
-                                puts("------------------------------------\n");
+                const char* buffer_ptr = buffer;
+                size_t buffer_size = info.RegionSize;
 
-                                printf("Module name: %s\n", module_name);
-                            }
-                            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t", 
-                                info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
-                            print_page_type(info.Type);
-                            print_once = 0;
-                        }
-                        printf("Match at address: 0x%p\n", p + i);
-                        num_found++;
+                while (buffer_size >= pattern_len) {
+                    const char* old_buf_ptr = buffer_ptr;
+                    buffer_ptr = (const char*)strstr_u8((const uint8_t*)buffer_ptr, buffer_size, (const uint8_t*)pattern, pattern_len);
+                    if (!buffer_ptr) {
+                        break;
                     }
+
+                    if (print_once) {
+                        if (m_name_found) {
+                            puts("------------------------------------\n");
+                            printf("Module name: %s\n", module_name);
+                        }
+                        printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
+                            info.BaseAddress, info.AllocationBase, info.RegionSize, get_page_protect(info.Protect), get_page_state(info.State));
+                        print_page_type(info.Type);
+                        print_once = 0;
+                    }
+                    const size_t buffer_offset = buffer_ptr - buffer;
+                    printf("Match at address: 0x%p\n", p + buffer_offset);
+
+                    num_found++;
+                    buffer_ptr++;
+                    buffer_size -= (buffer_ptr - old_buf_ptr);
                 }
+
                 if (num_found) {
-                puts("");
-                num_found_total += num_found;
+                    puts("");
+                    num_found_total += num_found;
                 }
             }
         }
@@ -285,7 +341,7 @@ int main() {
             }
         }
 
-        puts("Input pattern (hex value or ascii string): ");
+        puts("Input pattern (hex value or ascii string (no whitespace)): ");
         res = scanf_s("%s", pattern, (unsigned int)sizeof(pattern));
         if (EOF == res || 0 == res) {
             puts("Error reading pattern!");
