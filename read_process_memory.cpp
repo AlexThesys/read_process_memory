@@ -299,6 +299,15 @@ int main() {
         }
 
         if (!use_same_pid) {
+            if (pid_len != -1) {
+                puts("List system's processes? y/n");
+                while ((getchar()) != '\n'); // flush stdin
+                symbol = getchar();
+                if (symbol == (int)'y' || symbol == (int)'Y') {
+                    list_processes();
+                    puts("\n\n====================================\n");
+                }
+            }
             puts("Input PID: ");
             res = scanf_s("%s", pid_str, (unsigned int)sizeof(pid_str));
             if (EOF == res || 0 == res) {
