@@ -546,26 +546,43 @@ static int list_process_modules(DWORD dw_pid) {
     return(TRUE);
 }
 
-static DWORD_PTR get_thread_stack_base(HANDLE hThread) {
+typedef struct stack_info {
+    DWORD_PTR sp;
+    SIZE_T size;
+} stack_info;
+
+static int get_thread_stack_base(HANDLE hThread, HANDLE process, stack_info *res) {
     CONTEXT context;
     context.ContextFlags = CONTEXT_CONTROL;
     GetThreadContext(hThread, &context);
 #ifdef _WIN64
-    return context.Rsp; // Stack pointer for 64-bit
+    DWORD_PTR sp = context.Rsp; // Stack pointer for 64-bit
 #else
-    return context.Esp; // Stack pointer for 32-bit
+    DWORD_PTR sp = context.Esp; // Stack pointer for 32-bit
 #endif
+
+    int stack_base_found = 0;
+    MEMORY_BASIC_INFORMATION _info;
+    if (VirtualQueryEx(process, (LPCVOID)sp, &_info, sizeof(_info)) == sizeof(_info)) {
+        if (_info.State == MEM_COMMIT && _info.Type == MEM_PRIVATE) {
+            res->sp = (DWORD_PTR)_info.BaseAddress;
+            res->size = _info.RegionSize;
+            stack_base_found = 1;
+        }
+    }
+
+    return stack_base_found;
 }
 
 static int list_process_threads(DWORD dw_owner_pid) {
     HANDLE hThreadSnap = INVALID_HANDLE_VALUE;
     THREADENTRY32 te32;
-    DWORD_PTR stackBase = NULL;
+    stack_info si = { NULL, 0 };
 
     // Take a snapshot of all running threads  
     hThreadSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (hThreadSnap == INVALID_HANDLE_VALUE)
-        return(FALSE);
+        return (FALSE);
 
     // Fill in the size of the structure before using it. 
     te32.dwSize = sizeof(THREADENTRY32);
@@ -574,8 +591,15 @@ static int list_process_threads(DWORD dw_owner_pid) {
     // and exit if unsuccessful
     if (!Thread32First(hThreadSnap, &te32)) {
         print_error(TEXT("Thread32First")); // show cause of failure
-        CloseHandle(hThreadSnap);          // clean the snapshot object
-        return(FALSE);
+        CloseHandle(hThreadSnap);
+        return (FALSE);
+    }
+
+    HANDLE process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, dw_owner_pid);
+    if (process == NULL) {
+        fprintf(stderr, "Failed opening the process. Error code: %lu\n", GetLastError());
+        CloseHandle(hThreadSnap);
+        return (FALSE);
     }
 
     // Now walk the thread list of the system,
@@ -585,18 +609,22 @@ static int list_process_threads(DWORD dw_owner_pid) {
         if (te32.th32OwnerProcessID == dw_owner_pid) {
             HANDLE hThread = OpenThread(THREAD_ALL_ACCESS, FALSE, te32.th32ThreadID);
             if (hThread != NULL) {
-                stackBase = get_thread_stack_base(hThread);
+                if (!get_thread_stack_base(hThread, process, &si)) {
+                    puts("Failed acquiring stack base!");
+                }
                 CloseHandle(hThread);
             }
 
             _tprintf(TEXT("\n\n     THREAD ID         = 0x%08X"), te32.th32ThreadID);
             _tprintf(TEXT("\n     Base priority     = %d"), te32.tpBasePri);
             _tprintf(TEXT("\n     Delta priority    = %d"), te32.tpDeltaPri);
-            _tprintf(TEXT("\n     Stack Base        = 0x%p"), stackBase);
+            _tprintf(TEXT("\n     Stack Base        = 0x%p"), si.sp);
+            _tprintf(TEXT("\n     Stack Size        = 0x%llx"), si.size);
             _tprintf(TEXT("\n"));
         }
     } while (Thread32Next(hThreadSnap, &te32));
 
+    CloseHandle(process);
     CloseHandle(hThreadSnap);
     return(TRUE);
 }
