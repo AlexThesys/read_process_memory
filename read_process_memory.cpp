@@ -642,18 +642,36 @@ static int traverse_heap_list(DWORD dw_pid) {
     }
 
     if (Heap32ListFirst(hHeapSnap, &hl)) {
+        puts("List all heap blocks? y/n");
+        while ((getchar()) != '\n'); // flush stdin
+        const char symbol = getchar();
+        const int list_all_blocks = (symbol == (int)'y' || symbol == (int)'Y');
         do {
             HEAPENTRY32 he;
             ZeroMemory(&he, sizeof(HEAPENTRY32));
             he.dwSize = sizeof(HEAPENTRY32);
-
             if (Heap32First(&he, dw_pid, hl.th32HeapID)) {
-                printf("\nHeap ID: 0x%x\n", hl.th32HeapID);
+                printf("\n---- Heap ID: 0x%x ----\n", hl.th32HeapID);
+
+                ULONG_PTR start_address = he.dwAddress;
+                ULONG_PTR end_address = start_address;
+                SIZE_T last_block_size = 0;
                 do {
-                    printf("Start address: 0x%p Block size: 0x%x\n", he.dwAddress, he.dwBlockSize);
+                    if (list_all_blocks) {
+                        printf("Start address: 0x%p Block size: 0x%x\n", he.dwAddress, he.dwBlockSize);
+                    }
+                    start_address = _min(start_address, he.dwAddress);
+                    if (end_address < he.dwAddress) {
+                        end_address = he.dwAddress;
+                        last_block_size = he.dwBlockSize;
+                    }
 
                     he.dwSize = sizeof(HEAPENTRY32);
                 } while (Heap32Next(&he));
+                end_address += last_block_size;
+                printf("\nStart Address: 0x%p\n", start_address);
+                printf("End Address: 0x%p\n", end_address);
+                printf("Size: 0x%llx\n", ptrdiff_t(end_address - start_address));
             }
             hl.dwSize = sizeof(HEAPLIST32);
         } while (Heap32ListNext(hHeapSnap, &hl));
