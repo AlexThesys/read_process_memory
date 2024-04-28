@@ -196,9 +196,10 @@ static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t
     return NULL;
 }
 
-std::mutex g_mtx;
-std::condition_variable g_cv;
-LONG g_memory_usage_bytes = 0; // accessed from different threads
+static std::mutex g_mtx;
+static std::condition_variable g_cv;
+static LONG g_memory_usage_bytes = 0; // accessed from different threads
+static int g_max_omp_threads = MAX_OMP_THREADS;
 
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     std::vector<std::vector<const char*>> match;
@@ -222,7 +223,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     const size_t num_regions = info.size();
     match.resize(num_regions);
 
-    const int num_threads = _min(MAX_OMP_THREADS, omp_get_num_procs());
+    const int num_threads = _min(g_max_omp_threads, omp_get_num_procs());
     omp_set_num_threads(num_threads);   
 #pragma omp parallel for schedule(dynamic, 1) shared(match,p,info)
     for (int64_t i = 0;  i < (int64_t)num_regions; i++) {
@@ -319,10 +320,20 @@ static int check_architecture_rt() {
                 || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL);
 }
 
-int main() {
+int main(int argc, char** argv) {
     if (!check_architecture_rt()) {
         puts("Only x86-64 architecture is supported at the moment!");
         return 1;
+    }
+
+    if (argc > 1) {
+        char* end = NULL;
+        size_t arg_len = strlen(argv[1]);
+        DWORD num_threads = strtoul(argv[1], &end, is_hex(argv[1], arg_len) ? 16 : 10);
+        if (argv[1] != end) {
+            num_threads = _max(1, num_threads);
+            g_max_omp_threads = _min(num_threads, g_max_omp_threads);
+        }
     }
 
     char pattern[MAX_PATTERN_LEN];
