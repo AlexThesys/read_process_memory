@@ -301,7 +301,30 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
     }
 }
 
+static constexpr int check_architecture_ct() {
+#if defined(__x86_64__) || defined(_M_X64)
+    return 1;
+#elif defined(i386) || defined(__i386__) || defined(__i386) || defined(_M_IX86)
+    return 1;
+#else
+    return 0;
+#endif
+}
+static_assert(check_architecture_ct(), "Only x86-64 architecture is supported at the moment!");
+
+static int check_architecture_rt() {
+    SYSTEM_INFO SystemInfo;
+    GetSystemInfo(&SystemInfo);
+    return int(SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64
+                || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL);
+}
+
 int main() {
+    if (!check_architecture_rt()) {
+        puts("Only x86-64 architecture is supported at the moment!");
+        return 1;
+    }
+
     char pattern[MAX_PATTERN_LEN];
     char pid_str[MAX_PID_STR_LEN];
     size_t pid_len = -1;
