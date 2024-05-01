@@ -197,10 +197,12 @@ static const uint8_t* strstr_u8(const uint8_t* str, size_t str_sz, const uint8_t
     return NULL;
 }
 
+static std::mutex g_err_mtx;
 static std::mutex g_mtx;
 static std::condition_variable g_cv;
 static LONG g_memory_usage_bytes = 0; // accessed from different threads
 static int g_max_omp_threads = MAX_OMP_THREADS;
+static int g_show_failed_readings = 0;
 
 static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len) {
     std::vector<std::vector<const char*>> match;
@@ -229,7 +231,7 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
 #pragma omp parallel for schedule(dynamic, 1) shared(match,p,info)
     for (int64_t i = 0;  i < (int64_t)num_regions; i++) {
         assert((info[i].Type == MEM_MAPPED || info[i].Type == MEM_PRIVATE || info[i].Type == MEM_IMAGE));
-        const size_t region_size = info[i].RegionSize;
+        size_t region_size = info[i].RegionSize;
         {
             std::unique_lock<std::mutex> lk(g_mtx);
             while (true) {
@@ -250,20 +252,31 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
         SIZE_T bytes_read;
         const BOOL res = ReadProcessMemory(process, p[i], buffer, region_size, &bytes_read);
         if (!res || (bytes_read != region_size)) {
-            if (info[i].Type == MEM_IMAGE) {
-                char module_name[MAX_PATH];
-                if (GetModuleFileNameExA(process, (HMODULE)info[i].AllocationBase, module_name, MAX_PATH)) {
-                    puts("------------------------------------\n");
-                    printf("Module name: %s\n", module_name);
+            if (!g_show_failed_readings) {
+                if (!res) {
+                    continue;
+                } else {
+                    region_size = bytes_read;
                 }
-            }
-            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
-                info[i].BaseAddress, info[i].AllocationBase, info[i].RegionSize, get_page_protect(info[i].Protect), get_page_state(info[i].State));
-            print_page_type(info[i].Type);
-            if (!res) {
-                fprintf(stderr, "Failed reading process memory. Error code: %lu\n\n", GetLastError());
             } else {
-                printf("Process memory not read in it's entirety! 0x%llx bytes skipped out of 0x%llx\n\n", (region_size - bytes_read), region_size);
+                std::unique_lock<std::mutex> lk(g_err_mtx);
+                if (info[i].Type == MEM_IMAGE) {
+                    char module_name[MAX_PATH];
+                    if (GetModuleFileNameExA(process, (HMODULE)info[i].AllocationBase, module_name, MAX_PATH)) {
+                        puts("------------------------------------\n");
+                        printf("Module name: %s\n", module_name);
+                    }
+                }
+                printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
+                    info[i].BaseAddress, info[i].AllocationBase, info[i].RegionSize, get_page_protect(info[i].Protect), get_page_state(info[i].State));
+                print_page_type(info[i].Type);
+                if (!res) {
+                    fprintf(stderr, "Failed reading process memory. Error code: %lu\n\n", GetLastError());
+                    continue;
+                } else {
+                    region_size = bytes_read;
+                    printf("Process memory not read in it's entirety! 0x%llx bytes skipped out of 0x%llx\n\n", (region_size - bytes_read), region_size);
+                }
             }
         }
 
@@ -338,21 +351,36 @@ static int check_architecture_rt() {
                 || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL);
 }
 
-int main(int argc, char** argv) {
+const char* cmd_args[] = { "-h", "--help", "-f", "--show-failed-readings", "-t=", "--threads=" };
+
+static void parse_cmd_args(int argc, const char** argv) {
+    for (int i = 1; i < argc; i++) {
+        if ((0 == strcmp(argv[1], cmd_args[0])) || (0 == strcmp(argv[1], cmd_args[1]))) {
+            puts("-t=<num_threads> || --threads==\t\t -- limits the number of OMP threads");
+            puts("-f || --show-failed-readings\t\t -- show the regions, that failed to be read\n");
+        } else if ((0 == strcmp(argv[i], cmd_args[2])) || (0 == strcmp(argv[i], cmd_args[3]))) {
+            g_show_failed_readings = 1;
+        } else if ((argv[i] == strstr(argv[i], cmd_args[4])) || (argv[i] == strstr(argv[i], cmd_args[5]))) {
+            const char* num_t = (argv[i][1] == '-') ? (argv[i] + strlen(cmd_args[5])) : (argv[i] + strlen(cmd_args[4]));
+            char* end = NULL;
+            size_t arg_len = strlen(num_t);
+            DWORD num_threads = strtoul(num_t, &end, is_hex(num_t, arg_len) ? 16 : 10);
+            if (num_t != end) {
+                num_threads = _max(1, num_threads);
+                g_max_omp_threads = _min(num_threads, g_max_omp_threads);
+            }
+        }
+        // ...
+    }
+}
+
+int main(int argc, const char** argv) {
     if (!check_architecture_rt()) {
         puts("Only x86-64 architecture is supported at the moment!");
         return 1;
     }
 
-    if (argc > 1) {
-        char* end = NULL;
-        size_t arg_len = strlen(argv[1]);
-        DWORD num_threads = strtoul(argv[1], &end, is_hex(argv[1], arg_len) ? 16 : 10);
-        if (argv[1] != end) {
-            num_threads = _max(1, num_threads);
-            g_max_omp_threads = _min(num_threads, g_max_omp_threads);
-        }
-    }
+    parse_cmd_args(argc, argv);
 
     char pattern[MAX_PATTERN_LEN];
     char pid_str[MAX_PID_STR_LEN];
