@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -128,23 +129,23 @@ static void parse_input(const char* pattern, search_data *data) {
     char* end;
     value = strtoull(pattern, &end, 0x10);
     const int is_hex = (pattern != end);
-    if (is_hex && (data->pattern_len > (sizeof(uint64_t) * 2 + 2))) {
-        printf("Max supported hex value size: %d bytes!\n", (int)sizeof(uint64_t));
-        data->type = it_error_type;
-        return;
-    }
 
     if (is_hex) {
         data->type = it_hex;
         data->value = value;
         data->pattern = (const char*)&data->value;
         if (*end == 'h' || *end == 'H') {
-            data->pattern_len -= 1;
+            data->pattern_len = size_t(end - pattern);
         } else if (pattern[0] == '0' && (pattern[1] == 'x' || pattern[1] == 'X')) {
-            data->pattern_len -= 2;
+            data->pattern_len -= 1;
         }
         data->pattern_len /= 2;
-        puts("\nSearching for a hex value...\n");
+        if (data->pattern_len <= sizeof(uint64_t)) {
+            puts("\nSearching for a hex value...\n");
+        } else {
+            printf("Max supported hex value size: %d bytes!\n", (int)sizeof(uint64_t));
+            data->type = it_error_type;
+        }
     } else {
         data->type = it_ascii;
         data->pattern = pattern;
@@ -247,7 +248,24 @@ static void find_pattern(HANDLE process, const char* pattern, size_t pattern_len
         }
 
         SIZE_T bytes_read;
-        ReadProcessMemory(process, p[i], buffer, region_size, &bytes_read);
+        const BOOL res = ReadProcessMemory(process, p[i], buffer, region_size, &bytes_read);
+        if (!res || (bytes_read != region_size)) {
+            if (info[i].Type == MEM_IMAGE) {
+                char module_name[MAX_PATH];
+                if (GetModuleFileNameExA(process, (HMODULE)info[i].AllocationBase, module_name, MAX_PATH)) {
+                    puts("------------------------------------\n");
+                    printf("Module name: %s\n", module_name);
+                }
+            }
+            printf("Base addres: 0x%p\tAllocation Base: 0x%p\tRegion Size: 0x%llx\nState: %s\tProtect: %s\t",
+                info[i].BaseAddress, info[i].AllocationBase, info[i].RegionSize, get_page_protect(info[i].Protect), get_page_state(info[i].State));
+            print_page_type(info[i].Type);
+            if (!res) {
+                fprintf(stderr, "Failed reading process memory. Error code: %lu\n\n", GetLastError());
+            } else {
+                printf("Process memory not read in it's entirety! 0x%llx bytes skipped out of 0x%llx\n\n", (region_size - bytes_read), region_size);
+            }
+        }
 
         if (bytes_read >= pattern_len) {
             const char* buffer_ptr = buffer;
@@ -418,6 +436,7 @@ int main(int argc, char** argv) {
             return 1;
         }
         const size_t pattern_len = strlen(pattern);
+        assert(pattern_len != 0);
 
         search_data data;
         data.pattern_len = pattern_len;
@@ -629,6 +648,36 @@ static int list_process_threads(DWORD dw_owner_pid) {
     return(TRUE);
 }
 
+#define NUM_VALUES 0x100
+
+struct entropy_context {
+    size_t freq[NUM_VALUES];
+};
+
+static void entropy_init(entropy_context * ctx) {
+    memset(ctx->freq, 0, sizeof(ctx->freq));
+}
+
+static void entropy_calculate_frequencies(entropy_context* ctx, const uint8_t* data, size_t  size) {
+    // Calculate frequencies of each byte
+    for (size_t i = 0; i < size; i++) {
+        ctx->freq[data[i]]++;
+    }
+}
+
+static double entropy_compute(entropy_context* ctx, size_t size) {
+    double entropy = 0.0;
+    const double sz = (double)size;
+    for (int i = 0; i < NUM_VALUES; i++) {
+        if (ctx->freq[i] != 0) {
+            double probability = (double)ctx->freq[i] / sz;
+            entropy -= probability * log2(probability);
+        }
+    }
+
+    return entropy;
+}
+
 static int traverse_heap_list(DWORD dw_pid) {
     HEAPLIST32 hl;
 
@@ -644,8 +693,23 @@ static int traverse_heap_list(DWORD dw_pid) {
     if (Heap32ListFirst(hHeapSnap, &hl)) {
         puts("List all heap blocks? y/n");
         while ((getchar()) != '\n'); // flush stdin
-        const char symbol = getchar();
-        const int list_all_blocks = (symbol == (int)'y' || symbol == (int)'Y');
+        char symbol = getchar();
+        const int list_all_blocks = !!(symbol == (int)'y' || symbol == (int)'Y');
+        puts("Compute entropy? (extra slow) y/n");
+        while ((getchar()) != '\n'); // flush stdin
+        symbol = getchar();
+        int compute_entropy = !!(symbol == (int)'y' || symbol == (int)'Y');
+        HANDLE process = 0;
+        if (compute_entropy) {
+            process = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, false, dw_pid);
+            if (process == NULL) {
+                fprintf(stderr, "Failed opening the process. Error code: %lu\n", GetLastError());
+                puts("Entropy won't be computed!");
+                compute_entropy = 0;
+            }
+        }
+        entropy_context e_ctx;
+        size_t total_size_blocks = 0;
         do {
             HEAPENTRY32 he;
             ZeroMemory(&he, sizeof(HEAPENTRY32));
@@ -656,10 +720,40 @@ static int traverse_heap_list(DWORD dw_pid) {
                 ULONG_PTR start_address = he.dwAddress;
                 ULONG_PTR end_address = start_address;
                 SIZE_T last_block_size = 0;
+
+                uint8_t* ent_buffer = NULL;
+                size_t max_block_size = 0;
+                if (compute_entropy) {
+                    entropy_init(&e_ctx);
+                }
                 do {
                     if (list_all_blocks) {
                         printf("Start address: 0x%p Block size: 0x%x\n", he.dwAddress, he.dwBlockSize);
                     }
+
+                    if (compute_entropy) {
+                        if (max_block_size < he.dwBlockSize) {
+                            max_block_size = he.dwBlockSize;
+                            uint8_t* buf = (uint8_t*)realloc(ent_buffer, he.dwBlockSize);
+                            if (buf) {
+                                ent_buffer = buf;
+                            } else {
+                                fprintf(stderr, "Buffer allocation faied! Error code: %lu\n", GetLastError());
+                                CloseHandle(process);
+                                CloseHandle(hHeapSnap);
+                                return FALSE;
+                            }
+                        }
+                        SIZE_T bytes_read;
+                        if (ReadProcessMemory(process, (LPCVOID)he.dwAddress, (LPVOID)ent_buffer, he.dwBlockSize, &bytes_read) && (bytes_read == he.dwBlockSize)) {
+                            entropy_calculate_frequencies(&e_ctx, ent_buffer, he.dwBlockSize);
+                            total_size_blocks += he.dwBlockSize;
+                        } else {
+                            printf("Start address: 0x%p Block size: 0x%x\n", he.dwAddress, he.dwBlockSize);
+                            fprintf(stderr, "Failed reading process memory. Error code: %lu\n", GetLastError());
+                        }
+                    }
+
                     start_address = _min(start_address, he.dwAddress);
                     if (end_address < he.dwAddress) {
                         end_address = he.dwAddress;
@@ -672,9 +766,18 @@ static int traverse_heap_list(DWORD dw_pid) {
                 printf("\nStart Address: 0x%p\n", start_address);
                 printf("End Address: 0x%p\n", end_address);
                 printf("Size: 0x%llx\n", ptrdiff_t(end_address - start_address));
+                if (compute_entropy) {
+                    const double entropy = entropy_compute(&e_ctx, total_size_blocks);
+                    printf("Entropy: %.2F\n", entropy);
+                    free(ent_buffer);
+                }
             }
             hl.dwSize = sizeof(HEAPLIST32);
         } while (Heap32ListNext(hHeapSnap, &hl));
+
+        if (compute_entropy) {
+            CloseHandle(process);
+        }
     } else {
         printf("Cannot list first heap (%d)\n", GetLastError());
     }
