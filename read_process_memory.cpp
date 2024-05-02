@@ -356,6 +356,10 @@ static constexpr size_t cmd_args_size = _countof(cmd_args) / 2; // given that ev
 static const char* program_version = "version 0.1.1";
 
 static void parse_cmd_args(int argc, const char** argv) {
+    if (argc > (cmd_args_size + 1)) {
+        puts("Too many arguments provided: some will be discarded.");
+    }
+
     for (int i = 1, sz = _min((int)cmd_args_size, argc); i < sz; i++) {
         if ((0 == strcmp(argv[i], cmd_args[0])) || (0 == strcmp(argv[i], cmd_args[1]))) { // help
             puts("-t=<num_threads> || --threads=\t\t -- limits the number of OMP threads");
