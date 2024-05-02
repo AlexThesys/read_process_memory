@@ -351,16 +351,17 @@ static int check_architecture_rt() {
                 || SystemInfo.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL);
 }
 
-const char* cmd_args[] = { "-h", "--help", "-f", "--show-failed-readings", "-t=", "--threads=" };
+static const char* cmd_args[] = { "-h", "--help", "-f", "--show-failed-readings", "-t=", "--threads=", "-v", "--version" };
+static const char* program_version = "version 0.1.1";
 
 static void parse_cmd_args(int argc, const char** argv) {
     for (int i = 1; i < argc; i++) {
-        if ((0 == strcmp(argv[1], cmd_args[0])) || (0 == strcmp(argv[1], cmd_args[1]))) {
+        if ((0 == strcmp(argv[i], cmd_args[0])) || (0 == strcmp(argv[i], cmd_args[1]))) { // help
             puts("-t=<num_threads> || --threads==\t\t -- limits the number of OMP threads");
             puts("-f || --show-failed-readings\t\t -- show the regions, that failed to be read\n");
-        } else if ((0 == strcmp(argv[i], cmd_args[2])) || (0 == strcmp(argv[i], cmd_args[3]))) {
+        } else if ((0 == strcmp(argv[i], cmd_args[2])) || (0 == strcmp(argv[i], cmd_args[3]))) { // display failed reads
             g_show_failed_readings = 1;
-        } else if ((argv[i] == strstr(argv[i], cmd_args[4])) || (argv[i] == strstr(argv[i], cmd_args[5]))) {
+        } else if ((argv[i] == strstr(argv[i], cmd_args[4])) || (argv[i] == strstr(argv[i], cmd_args[5]))) { // OMP threads
             const char* num_t = (argv[i][1] == '-') ? (argv[i] + strlen(cmd_args[5])) : (argv[i] + strlen(cmd_args[4]));
             char* end = NULL;
             size_t arg_len = strlen(num_t);
@@ -369,6 +370,8 @@ static void parse_cmd_args(int argc, const char** argv) {
                 num_threads = _max(1, num_threads);
                 g_max_omp_threads = _min(num_threads, g_max_omp_threads);
             }
+        } else if ((0 == strcmp(argv[i], cmd_args[6])) || (0 == strcmp(argv[i], cmd_args[7]))) { // version
+            puts(program_version);
         }
         // ...
     }
