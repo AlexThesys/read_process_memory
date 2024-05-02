@@ -352,12 +352,13 @@ static int check_architecture_rt() {
 }
 
 static const char* cmd_args[] = { "-h", "--help", "-f", "--show-failed-readings", "-t=", "--threads=", "-v", "--version" };
+static constexpr size_t cmd_args_size = _countof(cmd_args) / 2; // given that every option has a long and a short forms
 static const char* program_version = "version 0.1.1";
 
 static void parse_cmd_args(int argc, const char** argv) {
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1, sz = _min((int)cmd_args_size, argc); i < sz; i++) {
         if ((0 == strcmp(argv[i], cmd_args[0])) || (0 == strcmp(argv[i], cmd_args[1]))) { // help
-            puts("-t=<num_threads> || --threads==\t\t -- limits the number of OMP threads");
+            puts("-t=<num_threads> || --threads=\t\t -- limits the number of OMP threads");
             puts("-f || --show-failed-readings\t\t -- show the regions, that failed to be read\n");
         } else if ((0 == strcmp(argv[i], cmd_args[2])) || (0 == strcmp(argv[i], cmd_args[3]))) { // display failed reads
             g_show_failed_readings = 1;
