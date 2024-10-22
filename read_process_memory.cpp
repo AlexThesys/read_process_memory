@@ -355,7 +355,7 @@ static const char* cmd_args[] = { "-h", "--help", "-f", "--show-failed-readings"
 static constexpr size_t cmd_args_size = _countof(cmd_args) / 2; // given that every option has a long and a short forms
 static const char* program_version = "version 0.1.1";
 
-static void parse_cmd_args(int argc, const char** argv) {
+static bool parse_cmd_args(int argc, const char** argv) {
     if (argc > (cmd_args_size + 1)) {
         puts("Too many arguments provided: some will be discarded.");
     }
@@ -364,6 +364,7 @@ static void parse_cmd_args(int argc, const char** argv) {
         if ((0 == strcmp(argv[i], cmd_args[0])) || (0 == strcmp(argv[i], cmd_args[1]))) { // help
             puts("-t=<num_threads> || --threads=\t\t -- limits the number of OMP threads");
             puts("-f || --show-failed-readings\t\t -- show the regions, that failed to be read\n");
+            return false;
         } else if ((0 == strcmp(argv[i], cmd_args[2])) || (0 == strcmp(argv[i], cmd_args[3]))) { // display failed reads
             g_show_failed_readings = 1;
         } else if ((argv[i] == strstr(argv[i], cmd_args[4])) || (argv[i] == strstr(argv[i], cmd_args[5]))) { // OMP threads
@@ -377,9 +378,11 @@ static void parse_cmd_args(int argc, const char** argv) {
             }
         } else if ((0 == strcmp(argv[i], cmd_args[6])) || (0 == strcmp(argv[i], cmd_args[7]))) { // version
             puts(program_version);
+            return false;
         }
         // ...
     }
+    return true;
 }
 
 int main(int argc, const char** argv) {
@@ -388,7 +391,9 @@ int main(int argc, const char** argv) {
         return 1;
     }
 
-    parse_cmd_args(argc, argv);
+    if (!parse_cmd_args(argc, argv)) {
+        return 0;
+    }
 
     char pattern[MAX_PATTERN_LEN];
     char pid_str[MAX_PID_STR_LEN];
